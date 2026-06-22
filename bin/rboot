@@ -201,6 +201,70 @@ cmd_add() {
   return "$rc"
 }
 
+# encode_claude_path <absolute-path>
+# Converts an absolute path to its Claude project directory name by replacing
+# all / and . with -.  e.g. /a/b/repo/.worktrees/x → -a-b-repo--worktrees-x
+encode_claude_path() {
+  local p="${1//\//-}"
+  printf '%s\n' "${p//./-}"
+}
+
+# link_claude_project — symlink the current worktree's Claude project dir to
+# the main repo's Claude project dir so memories are shared.
+# No-op when not in a worktree or when the Claude projects dir doesn't exist.
+link_claude_project() {
+  # Skip if not in a worktree (.git is a directory in the main repo)
+  [[ -f "$REPO_ROOT/.git" ]] || return 0
+
+  # Derive main repo root from the first entry in the worktree list (always the main worktree)
+  local main_root
+  main_root=$(git worktree list --porcelain | awk '/^worktree/{print $2; exit}')
+  if [[ -z "$main_root" ]]; then
+    echo "  Warning: could not determine main worktree root — skipping Claude link" >&2
+    return 0
+  fi
+  main_root=$(cd "$main_root" && pwd -P) || {
+    echo "  Warning: could not resolve main worktree root — skipping Claude link" >&2
+    return 0
+  }
+
+  # Guard: verify main_root is a real git repo root (protects against bare/detached git-dir layouts)
+  git -C "$main_root" rev-parse --show-toplevel &>/dev/null || {
+    echo "  Warning: could not verify main repo root at ${main_root} — skipping Claude link" >&2
+    return 0
+  }
+
+  # Compute Claude project directory paths
+  local claude_dir="${CLAUDE_PROJECTS_DIR:-${HOME}/.claude/projects}"
+  local worktree_project_dir="${claude_dir}/$(encode_claude_path "$REPO_ROOT")"
+  local main_project_dir="${claude_dir}/$(encode_claude_path "$main_root")"
+  local wt_rel="${REPO_ROOT#"${main_root}/"}"
+
+  # Skip silently if Claude projects dir doesn't exist
+  [[ -d "$claude_dir" ]] || return 0
+
+  # Warn and skip if worktree project dir is a real directory (not a symlink)
+  if [[ -d "$worktree_project_dir" && ! -L "$worktree_project_dir" ]]; then
+    echo "  Warning: Claude project dir for ${wt_rel} is a real directory — skipping link" >&2
+    return 0
+  fi
+
+  # readlink (BSD/macOS) returns the raw link target — correct here because
+  # $main_project_dir is always absolute (derived from pwd -P above).
+  # Skip silently if already correctly symlinked
+  if [[ -L "$worktree_project_dir" ]] && \
+     [[ "$(readlink "$worktree_project_dir")" == "$main_project_dir" ]]; then
+    return 0
+  fi
+
+  # Create (or replace) the symlink; warn if replacing an existing mismatched link
+  if [[ -L "$worktree_project_dir" ]]; then
+    echo "  Warning: replacing existing Claude project link for ${wt_rel} (was: $(readlink "$worktree_project_dir"))" >&2
+  fi
+  ln -sfn "$main_project_dir" "$worktree_project_dir"
+  echo "  Linked Claude project: ${wt_rel} -> $(basename "$main_root")"
+}
+
 # cmd_run — apply symlink config for current repo + nested repos.
 cmd_run() {
   require_env
@@ -222,6 +286,7 @@ cmd_run() {
              -path "$REPO_ROOT/.worktrees/*" -prune -o \
              -name .git -print 2>/dev/null)
 
+  link_claude_project
   echo "Done."
 }
 
