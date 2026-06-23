@@ -14,13 +14,11 @@ create_test_repo() {
 # testrepo entry in the global config.
 # Usage: write_links <<'EOF' ... EOF
 write_links() {
-  local tmp links_file
-  links_file=$(mktemp)
-  cat > "$links_file"
+  local links tmp
+  links=$(cat)
   tmp=$(mktemp)
-  jq --slurpfile new_links "$links_file" '.repos.testrepo.links = $new_links[0]' "$RBOOT_CONFIG" > "$tmp"
+  jq --argjson links "$links" '.repos.testrepo.links = $links' "$RBOOT_CONFIG" > "$tmp"
   mv "$tmp" "$RBOOT_CONFIG"
-  rm -f "$links_file"
 }
 
 rboot_setup() {

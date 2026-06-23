@@ -25,13 +25,6 @@ _expand() {
   " -- "$1" "$2"
 }
 
-# Helper: write a links array to the rboot config
-_write_links() {
-  write_links <<'EOFLINKS'
-$1
-EOFLINKS
-}
-
 @test "expand_templates: expands ~ to HOME" {
   result=$(_expand "~/some/path" "$REPO_DIR")
   [ "$result" = "${HOME}/some/path" ]
@@ -79,7 +72,7 @@ EOFLINKS
 write_setup_json() {
   local links
   links=$(cat)
-  write_links "$links"
+  write_links <<< "$links"
 }
 
 @test "apply_config: creates file symlink from links array" {
