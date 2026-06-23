@@ -167,22 +167,24 @@ resolve_rel() {
   printf '%s\n' "$rel"
 }
 
-# update_config <cfg_path> <rel>
-# Appends { "from": "~/.rboot/<REPO_NAME>/<rel>", "to": "{{current_repo_root}}/<rel>" }
-# to links[] if not already present. Atomic write.
+# update_config <rel>
+# Appends {"from":"{{config_path}}/<rel>","to":"{{current_repo_root}}/<rel>"}
+# to .repos[REPO_NAME].links in RBOOT_CONFIG if not already present. Atomic write.
 update_config() {
-  local cfg="$1" rel="$2" tmp
-  local from_val="~/repos/.repo-config/${REPO_NAME}/${rel}"
+  local rel="$1" tmp
+  local from_val="{{config_path}}/${rel}"
   local to_val="{{current_repo_root}}/${rel}"
-  tmp=$(mktemp "${cfg}.XXXXXX") || return 1
-  if jq --arg from "$from_val" --arg to "$to_val" '
-        .links = (.links // [])
-        | if (.links | map(select(.from == $from and .to == $to)) | length) > 0
+  tmp=$(mktemp "${RBOOT_CONFIG}.XXXXXX") || return 1
+  if jq --arg n "$REPO_NAME" --arg from "$from_val" --arg to "$to_val" '
+        .repos = (.repos // {})
+        | .repos[$n] = (.repos[$n] // {})
+        | .repos[$n].links = (.repos[$n].links // [])
+        | if (.repos[$n].links | map(select(.from == $from and .to == $to)) | length) > 0
           then .
-          else .links += [{"from": $from, "to": $to}]
+          else .repos[$n].links += [{"from": $from, "to": $to}]
           end
-      ' "$cfg" > "$tmp"; then
-    mv "$tmp" "$cfg"
+      ' "$RBOOT_CONFIG" > "$tmp"; then
+    mv "$tmp" "$RBOOT_CONFIG"
   else
     rm -f "$tmp"; return 1
   fi
@@ -190,38 +192,44 @@ update_config() {
 
 # add_one — validate-then-mutate, set -e-safe.
 add_one() {
-  local arg="$1" rel dest src cfg
+  local arg="$1" rel dest src config_path config_path_created=false
   if [[ -L "$arg" ]]; then echo "Skip: '$arg' is already a symlink (already managed by rboot)." >&2; return 1; fi
   if [[ ! -e "$arg" ]]; then echo "Error: '$arg' does not exist." >&2; return 1; fi
   rel=$(resolve_rel "$arg") || { echo "Error: '$arg' is outside the repository." >&2; return 1; }
-  dest="${CONFIG_DIR}/${REPO_NAME}/${rel}"
+  config_path=$(resolve_config_path "$REPO_NAME")
+  dest="${config_path}/${rel}"
   src="${REPO_ROOT}/${rel}"
   if [[ -e "$dest" || -L "$dest" ]]; then
     echo "Error: destination already exists: ${dest} (refusing to clobber)." >&2; return 1; fi
 
-  cfg="${CONFIG_DIR}/${REPO_NAME}/setup.json"
-  mkdir -p "${CONFIG_DIR}/${REPO_NAME}"
-  [[ -f "$cfg" ]] || printf '{\n    "links": []\n}\n' > "$cfg"
+  if [[ ! -d "$config_path" ]]; then
+    mkdir -p "$config_path" || return 1
+    config_path_created=true
+  fi
 
   mkdir -p "$(dirname "$dest")"
   if ! mv "$src" "$dest"; then echo "Error: failed to move ${src} -> ${dest}." >&2; return 1; fi
 
   mkdir -p "$(dirname "$src")"
   if ! ln -sfn "$dest" "$src"; then
-    echo "Error: failed to create symlink; rolling back move." >&2; mv "$dest" "$src"; return 1; fi
+    echo "Error: failed to create symlink; rolling back move." >&2
+    mv "$dest" "$src"
+    [[ "$config_path_created" == "true" ]] && rm -rf "$config_path"
+    return 1
+  fi
 
-  if ! update_config "$cfg" "$rel"; then
-    echo "Error: failed to update ${cfg}; rolling back move." >&2
+  if ! update_config "$rel"; then
+    echo "Error: failed to update ${RBOOT_CONFIG}; rolling back move." >&2
     rm -f "$src"
     mv "$dest" "$src"
+    [[ "$config_path_created" == "true" ]] && rm -rf "$config_path"
     return 1
   fi
 
   if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$rel" &>/dev/null; then
     echo "Warning: '${rel}' was git-tracked; the symlink will now show as a change. Update .gitignore yourself if desired." >&2; fi
 
-  local from_display="~/repos/.repo-config/${REPO_NAME}/${rel}"
-  echo "Added ${rel} -> ${from_display}"
+  echo "Added ${rel} -> {{config_path}}/${rel}"
 }
 
 # cmd_add — batch with per-path continue.

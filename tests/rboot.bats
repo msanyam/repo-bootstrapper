@@ -236,37 +236,46 @@ EOF
   [ "$(cat "${tgt}/b.txt")" = "existing" ]
 }
 
-@test "rboot add: creates setup.json with links array" {
+@test "rboot add: creates global config entry with correct links" {
   echo "content" > "${REPO_DIR}/myfile.txt"
 
   run bash "$RBOOT" add myfile.txt
   [ "$status" -eq 0 ]
 
-  # setup.json should exist with links array
-  local cfg="${CONFIG_PATH}/setup.json"
-  [ -f "$cfg" ]
-  run jq -r '.links[0].from' "$cfg"
-  [ "$output" = "~/.rboot/testrepo/myfile.txt" ]
-  run jq -r '.links[0].to' "$cfg"
+  run jq -r '.repos.testrepo.links[0].from' "$RBOOT_CONFIG"
+  [ "$output" = "{{config_path}}/myfile.txt" ]
+
+  run jq -r '.repos.testrepo.links[0].to' "$RBOOT_CONFIG"
   [ "$output" = "{{current_repo_root}}/myfile.txt" ]
 }
 
 @test "update_config: does not add duplicate links entries" {
-  local cfg="${CONFIG_PATH}/setup.json"
-  # Call update_config twice with the same rel; REPO_NAME must be exported
-  env HOME="$HOME" REPO_NAME=testrepo bash -c "
+  env HOME="$HOME" REPO_NAME=testrepo RBOOT_CONFIG="$RBOOT_CONFIG" bash -c "
     source '${RBOOT}'
-    update_config '${cfg}' 'myfile.txt'
-    update_config '${cfg}' 'myfile.txt'
+    update_config 'myfile.txt'
+    update_config 'myfile.txt'
   " || { echo "update_config subprocess failed" >&2; false; }
   local count
-  count=$(jq '.links | length' "$cfg")
+  count=$(jq '.repos.testrepo.links | length' "$RBOOT_CONFIG")
   [ "$count" -eq 1 ]
 }
 
-@test "rboot add: output shows 'Added <rel> -> <dest>'" {
+@test "rboot add: output shows 'Added <rel> -> {{config_path}}/<rel>'" {
   echo "content" > "${REPO_DIR}/afile.txt"
   run bash "$RBOOT" add afile.txt
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Added afile.txt -> ~/.rboot/testrepo/afile.txt"* ]]
+  [[ "$output" == *"Added afile.txt -> {{config_path}}/afile.txt"* ]]
+}
+
+@test "rboot add: moves file to config_path and creates symlink" {
+  echo "content" > "${REPO_DIR}/moveme.txt"
+
+  run bash "$RBOOT" add moveme.txt
+  [ "$status" -eq 0 ]
+
+  # File moved to config_path
+  [ -f "${CONFIG_PATH}/moveme.txt" ]
+  # Symlink created in repo
+  [ -L "${REPO_DIR}/moveme.txt" ]
+  [ "$(readlink "${REPO_DIR}/moveme.txt")" = "${CONFIG_PATH}/moveme.txt" ]
 }
