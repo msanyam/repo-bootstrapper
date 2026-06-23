@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONFIG_DIR="${HOME}/repos/.repo-config"
+RBOOT_CONFIG="${HOME}/.config/rboot/config.json"
 
 # repo_name_from <repo_root>
 # Echoes the config name for a repo, derived from its git remote origin URL.
@@ -19,14 +19,24 @@ apply_config() {
   local repo_root="$2"
   local indent="${3:-}"
   local required="${4:-false}"
-  local config_file="${CONFIG_DIR}/${repo_name}/setup.json"
   local claude_dir="${CLAUDE_PROJECTS_DIR:-${HOME}/.claude/projects}"
 
-  if [[ ! -f "$config_file" ]]; then
+  # Read links array and config_path from global config
+  local links config_path
+  links=$(jq -e --arg n "$repo_name" '.repos[$n].links' "$RBOOT_CONFIG" 2>/dev/null) || {
     if [[ "$required" == "true" ]]; then
-      echo "Error: no config found for '${repo_name}' at ${config_file}." >&2
+      echo "Error: no config found for '${repo_name}' in ${RBOOT_CONFIG}." >&2
       exit 1
     fi
+    return
+  }
+  config_path=$(jq -e -r --arg n "$repo_name" '.repos[$n].config_path' "$RBOOT_CONFIG" 2>/dev/null) || {
+    # If no config_path, use a sensible default
+    config_path="${HOME}/repos/.repo-config/${repo_name}"
+  }
+
+  # Skip if links array is empty
+  if [[ "$(echo "$links" | jq 'length')" -eq 0 ]]; then
     return
   fi
 
@@ -65,7 +75,7 @@ apply_config() {
     fi
 
     # [5] config-dir source missing: warn + skip (must precede directory-merge check)
-    if [[ "$resolved_from" == "$CONFIG_DIR"/* ]] && \
+    if [[ "$resolved_from" == "$config_path"/* ]] && \
        [[ ! -e "$resolved_from" && ! -L "$resolved_from" ]]; then
       echo "${indent}  Warning: ${resolved_from} not found — skipping" >&2
       continue
@@ -73,7 +83,7 @@ apply_config() {
 
     # [6] destination is a real directory
     if [[ -d "$resolved_to" && ! -L "$resolved_to" ]]; then
-      if [[ "$resolved_from" == "$CONFIG_DIR"/* ]]; then
+      if [[ "$resolved_from" == "$config_path"/* ]]; then
         # Directory merge: symlink only missing children
         local _dotglob_was
         _dotglob_was=$(shopt -p dotglob) || true
@@ -109,7 +119,7 @@ apply_config() {
     ln $link_flag "$resolved_from" "$resolved_to"
     echo "${indent}  Symlinked $(basename "$resolved_to") -> ${resolved_from}"
 
-  done < <(jq -c '.links[]?' "$config_file")
+  done < <(echo "$links" | jq -c '.[]?')
 }
 
 usage() {
@@ -124,9 +134,9 @@ EOF
 # require_env — guards + identity. Called only by command bodies (NOT at file
 # scope), so help works outside a git repo.
 require_env() {
-  if [[ ! -d "$CONFIG_DIR" ]]; then
-    echo "Error: config directory not found at ${CONFIG_DIR}." >&2
-    echo "       Create it with: mkdir -p ${CONFIG_DIR}" >&2
+  if [[ ! -f "$RBOOT_CONFIG" ]]; then
+    echo "Error: no config file at ${RBOOT_CONFIG}." >&2
+    echo "       Create it with: mkdir -p ~/.config/rboot && echo '{}' > ${RBOOT_CONFIG}" >&2
     exit 1
   fi
   git rev-parse --is-inside-work-tree &>/dev/null || { echo "Error: not inside a git repository." >&2; exit 1; }
@@ -136,6 +146,10 @@ require_env() {
   [[ -n "$REPO_NAME" ]] || { echo "Error: could not determine repository name." >&2; exit 1; }
   [[ "$REPO_NAME" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "Error: unsafe repository name '${REPO_NAME}' (must match [a-zA-Z0-9._-]+)." >&2; exit 1; }
   REPO_ROOT=$(cd "$(git rev-parse --show-toplevel)" && pwd -P) || { echo "Error: could not resolve repository root." >&2; exit 1; }
+  if ! jq -e --arg n "$REPO_NAME" '.repos[$n]' "$RBOOT_CONFIG" >/dev/null 2>&1; then
+    echo "Error: no config entry for '${REPO_NAME}' in ${RBOOT_CONFIG}." >&2
+    exit 1
+  fi
 }
 
 # resolve_rel — print repo-root-relative path; nonzero if missing/outside.

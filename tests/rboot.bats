@@ -4,16 +4,14 @@ load helpers/setup
 setup()    { rboot_setup; }
 teardown() { rboot_teardown; }
 
-@test "rboot fails with clear error when config dir is missing" {
-  # Remove the config base so require_env hits the missing-dir guard
-  rm -rf "${HOME}/repos"
+@test "rboot fails with clear error when global config is missing" {
+  rm -f "$RBOOT_CONFIG"
   run bash "$RBOOT" run
   [ "$status" -ne 0 ]
-  [[ "$output" == *"repos/.repo-config"* ]]
+  [[ "$output" == *".config/rboot/config.json"* ]]
 }
 
-@test "rboot finds config at ~/repos/.repo-config" {
-  # Config dir exists but no setup.json — should succeed with no-op
+@test "rboot succeeds when repo entry exists with empty links" {
   run bash "$RBOOT" run
   [ "$status" -eq 0 ]
 }
@@ -25,6 +23,13 @@ _expand() {
     source '${RBOOT}'
     expand_templates \"\$1\" \"\$2\"
   " -- "$1" "$2"
+}
+
+# Helper: write a links array to the rboot config
+_write_links() {
+  write_links <<'EOFLINKS'
+$1
+EOFLINKS
 }
 
 @test "expand_templates: expands ~ to HOME" {
@@ -70,20 +75,22 @@ _expand() {
   [[ "$output" == *"unknown template variable"* ]]
 }
 
-# Helper: write a setup.json in the test config dir
+# Helper: write links array to the config
 write_setup_json() {
-  cat > "${CONFIG_BASE}/testrepo/setup.json"
+  local links
+  links=$(cat)
+  write_links "$links"
 }
 
 @test "apply_config: creates file symlink from links array" {
-  local src="${CONFIG_BASE}/testrepo/.claude/settings.json"
+  local src="${CONFIG_PATH}/.claude/settings.json"
   mkdir -p "$(dirname "$src")"
   echo '{}' > "$src"
 
   write_setup_json <<EOF
 {
   "links": [
-    { "from": "~/repos/.repo-config/testrepo/.claude/settings.json",
+    { "from": "~/.rboot/testrepo/.claude/settings.json",
       "to": "{{repo_root}}/.claude/settings.json" }
   ]
 }
@@ -96,14 +103,14 @@ EOF
 }
 
 @test "apply_config: creates directory symlink from links array" {
-  local src="${CONFIG_BASE}/testrepo/docs/superpowers"
+  local src="${CONFIG_PATH}/docs/superpowers"
   mkdir -p "$src"
   touch "${src}/file.txt"
 
   write_setup_json <<EOF
 {
   "links": [
-    { "from": "~/repos/.repo-config/testrepo/docs/superpowers",
+    { "from": "~/.rboot/testrepo/docs/superpowers",
       "to": "{{repo_root}}/docs/superpowers" }
   ]
 }
@@ -115,13 +122,13 @@ EOF
 }
 
 @test "apply_config: is idempotent (skips correct symlink)" {
-  local src="${CONFIG_BASE}/testrepo/file.txt"
+  local src="${CONFIG_PATH}/file.txt"
   echo "content" > "$src"
   mkdir -p "$(dirname "${REPO_DIR}/file.txt")"
   ln -sf "$src" "${REPO_DIR}/file.txt"
 
   write_setup_json <<EOF
-{ "links": [{ "from": "~/repos/.repo-config/testrepo/file.txt", "to": "{{repo_root}}/file.txt" }] }
+{ "links": [{ "from": "~/.rboot/testrepo/file.txt", "to": "{{repo_root}}/file.txt" }] }
 EOF
 
   run bash "$RBOOT" run
@@ -131,14 +138,14 @@ EOF
 }
 
 @test "apply_config: replaces wrong symlink with warning" {
-  local src="${CONFIG_BASE}/testrepo/file.txt"
+  local src="${CONFIG_PATH}/file.txt"
   echo "content" > "$src"
   local wrong_target="/tmp/wrong-target"
   mkdir -p "$(dirname "${REPO_DIR}/file.txt")"
   ln -sf "$wrong_target" "${REPO_DIR}/file.txt"
 
   write_setup_json <<EOF
-{ "links": [{ "from": "~/repos/.repo-config/testrepo/file.txt", "to": "{{repo_root}}/file.txt" }] }
+{ "links": [{ "from": "~/.rboot/testrepo/file.txt", "to": "{{repo_root}}/file.txt" }] }
 EOF
 
   run bash "$RBOOT" run
@@ -150,7 +157,7 @@ EOF
 
 @test "apply_config: warns and skips missing config-dir source" {
   write_setup_json <<EOF
-{ "links": [{ "from": "~/repos/.repo-config/testrepo/missing.txt", "to": "{{repo_root}}/missing.txt" }] }
+{ "links": [{ "from": "~/.rboot/testrepo/missing.txt", "to": "{{repo_root}}/missing.txt" }] }
 EOF
 
   run bash "$RBOOT" run
@@ -161,11 +168,11 @@ EOF
 
 @test "apply_config: skips real file at destination with warning" {
   echo "real" > "${REPO_DIR}/protected.txt"
-  local src="${CONFIG_BASE}/testrepo/protected.txt"
+  local src="${CONFIG_PATH}/protected.txt"
   echo "managed" > "$src"
 
   write_setup_json <<EOF
-{ "links": [{ "from": "~/repos/.repo-config/testrepo/protected.txt", "to": "{{repo_root}}/protected.txt" }] }
+{ "links": [{ "from": "~/.rboot/testrepo/protected.txt", "to": "{{repo_root}}/protected.txt" }] }
 EOF
 
   run bash "$RBOOT" run
@@ -213,7 +220,7 @@ EOF
 
 @test "apply_config: warns and skips unknown template variable" {
   write_setup_json <<EOF
-{ "links": [{ "from": "~/repos/.repo-config/testrepo/f.txt", "to": "{{unknown}}/f.txt" }] }
+{ "links": [{ "from": "~/.rboot/testrepo/f.txt", "to": "{{unknown}}/f.txt" }] }
 EOF
 
   run bash "$RBOOT" run
@@ -228,16 +235,16 @@ EOF
   [ "$status" -eq 0 ]
 
   # setup.json should exist with links array
-  local cfg="${CONFIG_BASE}/testrepo/setup.json"
+  local cfg="${CONFIG_PATH}/setup.json"
   [ -f "$cfg" ]
   run jq -r '.links[0].from' "$cfg"
-  [ "$output" = "~/repos/.repo-config/testrepo/myfile.txt" ]
+  [ "$output" = "~/.rboot/testrepo/myfile.txt" ]
   run jq -r '.links[0].to' "$cfg"
   [ "$output" = "{{repo_root}}/myfile.txt" ]
 }
 
 @test "update_config: does not add duplicate links entries" {
-  local cfg="${CONFIG_BASE}/testrepo/setup.json"
+  local cfg="${CONFIG_PATH}/setup.json"
   # Call update_config twice with the same rel; REPO_NAME must be exported
   env HOME="$HOME" REPO_NAME=testrepo bash -c "
     source '${RBOOT}'
@@ -253,12 +260,12 @@ EOF
   echo "content" > "${REPO_DIR}/afile.txt"
   run bash "$RBOOT" add afile.txt
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Added afile.txt -> ~/repos/.repo-config/testrepo/afile.txt"* ]]
+  [[ "$output" == *"Added afile.txt -> ~/.rboot/testrepo/afile.txt"* ]]
 }
 
 @test "apply_config: directory merge inserts only missing children" {
   # Set up source dir with two children
-  local src="${CONFIG_BASE}/testrepo/mydir"
+  local src="${CONFIG_PATH}/mydir"
   mkdir -p "$src"
   echo "a" > "${src}/a.txt"
   echo "b" > "${src}/b.txt"
@@ -269,7 +276,7 @@ EOF
   echo "existing" > "${tgt}/b.txt"
 
   write_setup_json <<EOF
-{ "links": [{ "from": "~/repos/.repo-config/testrepo/mydir", "to": "{{repo_root}}/mydir" }] }
+{ "links": [{ "from": "~/.rboot/testrepo/mydir", "to": "{{repo_root}}/mydir" }] }
 EOF
 
   run bash "$RBOOT" run
