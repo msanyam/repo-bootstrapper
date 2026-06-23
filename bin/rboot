@@ -13,30 +13,20 @@ repo_name_from() {
 }
 
 # apply_config <repo_name> <repo_root> <indent> [required]
-# Applies the symlink config (links[]) for a single repo.
+# Applies the symlink config (links[]) for a single repo from RBOOT_CONFIG.
 apply_config() {
   local repo_name="$1"
   local repo_root="$2"
   local indent="${3:-}"
   local required="${4:-false}"
-  local claude_dir="${CLAUDE_PROJECTS_DIR:-${HOME}/.claude/projects}"
+  local config_path
+  config_path=$(resolve_config_path "$repo_name")
 
-  # Read links array and config_path from global config
-  local links config_path
-  links=$(jq -e --arg n "$repo_name" '.repos[$n].links' "$RBOOT_CONFIG" 2>/dev/null) || {
+  if ! jq -e --arg n "$repo_name" '.repos[$n]' "$RBOOT_CONFIG" >/dev/null 2>&1; then
     if [[ "$required" == "true" ]]; then
-      echo "Error: no config found for '${repo_name}' in ${RBOOT_CONFIG}." >&2
+      echo "Error: no config entry for '${repo_name}' in ${RBOOT_CONFIG}." >&2
       exit 1
     fi
-    return
-  }
-  config_path=$(jq -e -r --arg n "$repo_name" '.repos[$n].config_path' "$RBOOT_CONFIG" 2>/dev/null) || {
-    # If no config_path, use a sensible default
-    config_path="${HOME}/repos/.repo-config/${repo_name}"
-  }
-
-  # Skip if links array is empty
-  if [[ "$(echo "$links" | jq 'length')" -eq 0 ]]; then
     return
   fi
 
@@ -47,44 +37,37 @@ apply_config() {
     raw_from=$(jq -r '.from' <<< "$entry")
     raw_to=$(jq -r '.to'   <<< "$entry")
 
-    # Expand templates; skip entry if either expansion signals failure
     local resolved_from resolved_to
     resolved_from=$(expand_templates "$raw_from" "$repo_root" "$config_path") || continue
     resolved_to=$(expand_templates   "$raw_to"   "$repo_root" "$config_path") || continue
 
-    # [1] claude_projects_dir missing: silent skip
-    if [[ "$resolved_to" == "$claude_dir"* && ! -d "$claude_dir" ]]; then
-      continue
-    fi
-
-    # [2] destination is a real file: warn + skip
+    # [1] destination is a real file: warn + skip
     if [[ -f "$resolved_to" && ! -L "$resolved_to" ]]; then
       echo "${indent}  Warning: ${resolved_to} is a real file — skipping" >&2
       continue
     fi
 
-    # [3] idempotent: already correctly symlinked
+    # [2] idempotent: already correctly symlinked
     if [[ -L "$resolved_to" ]] && \
        [[ "$(readlink "$resolved_to")" == "$resolved_from" ]]; then
       continue
     fi
 
-    # [4] wrong symlink: warn and fall through to overwrite
+    # [3] wrong symlink: warn and fall through to overwrite
     if [[ -L "$resolved_to" ]]; then
       echo "${indent}  Warning: replacing existing link at $(basename "$resolved_to") (was: $(readlink "$resolved_to"))" >&2
     fi
 
-    # [5] config-dir source missing: warn + skip (must precede directory-merge check)
+    # [4] config_path source missing: warn + skip (must precede directory-merge check)
     if [[ "$resolved_from" == "$config_path"/* ]] && \
        [[ ! -e "$resolved_from" && ! -L "$resolved_from" ]]; then
       echo "${indent}  Warning: ${resolved_from} not found — skipping" >&2
       continue
     fi
 
-    # [6] destination is a real directory
+    # [5] destination is a real directory
     if [[ -d "$resolved_to" && ! -L "$resolved_to" ]]; then
       if [[ "$resolved_from" == "$config_path"/* ]]; then
-        # Directory merge: symlink only missing children
         local _dotglob_was
         _dotglob_was=$(shopt -p dotglob) || true
         shopt -u dotglob
@@ -107,19 +90,19 @@ apply_config() {
       continue
     fi
 
-    # [7] create symlink
+    # [6] create symlink
     local link_flag="-sf"
     if [[ -d "$resolved_from" ]]; then
       link_flag="-sfn"
     elif [[ ! -e "$resolved_from" ]]; then
-      link_flag="-sfn"  # external non-existent: default to directory symlink
+      link_flag="-sfn"
     fi
 
     mkdir -p "$(dirname "$resolved_to")"
     ln $link_flag "$resolved_from" "$resolved_to"
     echo "${indent}  Symlinked $(basename "$resolved_to") -> ${resolved_from}"
 
-  done < <(echo "$links" | jq -c '.[]?')
+  done < <(jq -c --arg n "$repo_name" '.repos[$n].links[]?' "$RBOOT_CONFIG")
 }
 
 usage() {

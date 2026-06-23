@@ -112,13 +112,8 @@ _expand() {
   mkdir -p "$(dirname "$src")"
   echo '{}' > "$src"
 
-  write_setup_json <<EOF
-{
-  "links": [
-    { "from": "~/.rboot/testrepo/.claude/settings.json",
-      "to": "{{current_repo_root}}/.claude/settings.json" }
-  ]
-}
+  write_links <<'EOF'
+[{"from":"{{config_path}}/.claude/settings.json","to":"{{current_repo_root}}/.claude/settings.json"}]
 EOF
 
   run bash "$RBOOT" run
@@ -132,13 +127,8 @@ EOF
   mkdir -p "$src"
   touch "${src}/file.txt"
 
-  write_setup_json <<EOF
-{
-  "links": [
-    { "from": "~/.rboot/testrepo/docs/superpowers",
-      "to": "{{current_repo_root}}/docs/superpowers" }
-  ]
-}
+  write_links <<'EOF'
+[{"from":"{{config_path}}/docs/superpowers","to":"{{current_repo_root}}/docs/superpowers"}]
 EOF
 
   run bash "$RBOOT" run
@@ -152,13 +142,12 @@ EOF
   mkdir -p "$(dirname "${REPO_DIR}/file.txt")"
   ln -sf "$src" "${REPO_DIR}/file.txt"
 
-  write_setup_json <<EOF
-{ "links": [{ "from": "~/.rboot/testrepo/file.txt", "to": "{{current_repo_root}}/file.txt" }] }
+  write_links <<'EOF'
+[{"from":"{{config_path}}/file.txt","to":"{{current_repo_root}}/file.txt"}]
 EOF
 
   run bash "$RBOOT" run
   [ "$status" -eq 0 ]
-  # Symlink should still point to same target
   [ "$(readlink "${REPO_DIR}/file.txt")" = "$src" ]
 }
 
@@ -169,20 +158,19 @@ EOF
   mkdir -p "$(dirname "${REPO_DIR}/file.txt")"
   ln -sf "$wrong_target" "${REPO_DIR}/file.txt"
 
-  write_setup_json <<EOF
-{ "links": [{ "from": "~/.rboot/testrepo/file.txt", "to": "{{current_repo_root}}/file.txt" }] }
+  write_links <<'EOF'
+[{"from":"{{config_path}}/file.txt","to":"{{current_repo_root}}/file.txt"}]
 EOF
 
   run bash "$RBOOT" run
   [ "$status" -eq 0 ]
   [[ "$output" == *"replacing existing link"* ]]
-  [ -L "${REPO_DIR}/file.txt" ]
   [ "$(readlink "${REPO_DIR}/file.txt")" = "$src" ]
 }
 
-@test "apply_config: warns and skips missing config-dir source" {
-  write_setup_json <<EOF
-{ "links": [{ "from": "~/.rboot/testrepo/missing.txt", "to": "{{current_repo_root}}/missing.txt" }] }
+@test "apply_config: warns and skips missing config_path source" {
+  write_links <<'EOF'
+[{"from":"{{config_path}}/missing.txt","to":"{{current_repo_root}}/missing.txt"}]
 EOF
 
   run bash "$RBOOT" run
@@ -196,60 +184,56 @@ EOF
   local src="${CONFIG_PATH}/protected.txt"
   echo "managed" > "$src"
 
-  write_setup_json <<EOF
-{ "links": [{ "from": "~/.rboot/testrepo/protected.txt", "to": "{{current_repo_root}}/protected.txt" }] }
+  write_links <<'EOF'
+[{"from":"{{config_path}}/protected.txt","to":"{{current_repo_root}}/protected.txt"}]
 EOF
 
   run bash "$RBOOT" run
   [ "$status" -eq 0 ]
   [[ "$output" == *"real file"* ]]
-  # Original file untouched
   [ "$(cat "${REPO_DIR}/protected.txt")" = "real" ]
 }
 
 @test "apply_config: skips worktree entries when not in a worktree" {
-  # Test repo has .git as a directory (main repo) — parent_repo_* vars should be skipped silently
-  local proj_dir="${HOME}/.claude/projects"
-  mkdir -p "$proj_dir"
-
-  write_setup_json <<EOF
-{
-  "links": [
-    { "from": "{{parent_repo_root}}/.claude",
-      "to": "{{current_repo_root}}/.claude-linked" }
-  ]
-}
+  write_links <<'EOF'
+[{"from":"~/.claude/projects/{{parent_repo_encoded}}","to":"~/.claude/projects/{{current_repo_root_encoded}}"}]
 EOF
 
+  mkdir -p "${HOME}/.claude/projects"
   run bash "$RBOOT" run
   [ "$status" -eq 0 ]
-  # No symlink created because parent_repo_root skips silently outside worktree
-  [ ! -e "${REPO_DIR}/.claude-linked" ]
-}
-
-@test "apply_config: silently skips when parent_repo_encoded used outside worktree" {
-  write_setup_json <<EOF
-{
-  "links": [
-    { "from": "~/some/path",
-      "to": "~/other/{{parent_repo_encoded}}" }
-  ]
-}
-EOF
-
-  run bash "$RBOOT" run
-  [ "$status" -eq 0 ]
-  [[ "$output" != *"Warning"* ]]
+  [ -z "$(ls -A "${HOME}/.claude/projects")" ]
 }
 
 @test "apply_config: warns and skips unknown template variable" {
-  write_setup_json <<EOF
-{ "links": [{ "from": "~/.rboot/testrepo/f.txt", "to": "{{unknown}}/f.txt" }] }
+  write_links <<'EOF'
+[{"from":"{{config_path}}/f.txt","to":"{{unknown}}/f.txt"}]
 EOF
 
   run bash "$RBOOT" run
   [ "$status" -eq 0 ]
   [[ "$output" == *"unknown template variable"* ]]
+}
+
+@test "apply_config: directory merge inserts only missing children" {
+  local src="${CONFIG_PATH}/mydir"
+  mkdir -p "$src"
+  echo "a" > "${src}/a.txt"
+  echo "b" > "${src}/b.txt"
+
+  local tgt="${REPO_DIR}/mydir"
+  mkdir -p "$tgt"
+  echo "existing" > "${tgt}/b.txt"
+
+  write_links <<'EOF'
+[{"from":"{{config_path}}/mydir","to":"{{current_repo_root}}/mydir"}]
+EOF
+
+  run bash "$RBOOT" run
+  [ "$status" -eq 0 ]
+  [ -L "${tgt}/a.txt" ]
+  [ ! -L "${tgt}/b.txt" ]
+  [ "$(cat "${tgt}/b.txt")" = "existing" ]
 }
 
 @test "rboot add: creates setup.json with links array" {
@@ -285,28 +269,4 @@ EOF
   run bash "$RBOOT" add afile.txt
   [ "$status" -eq 0 ]
   [[ "$output" == *"Added afile.txt -> ~/.rboot/testrepo/afile.txt"* ]]
-}
-
-@test "apply_config: directory merge inserts only missing children" {
-  # Set up source dir with two children
-  local src="${CONFIG_PATH}/mydir"
-  mkdir -p "$src"
-  echo "a" > "${src}/a.txt"
-  echo "b" > "${src}/b.txt"
-
-  # Set up target dir that already has b.txt
-  local tgt="${REPO_DIR}/mydir"
-  mkdir -p "$tgt"
-  echo "existing" > "${tgt}/b.txt"
-
-  write_setup_json <<EOF
-{ "links": [{ "from": "~/.rboot/testrepo/mydir", "to": "{{current_repo_root}}/mydir" }] }
-EOF
-
-  run bash "$RBOOT" run
-  [ "$status" -eq 0 ]
-  # a.txt symlinked in, b.txt untouched
-  [ -L "${tgt}/a.txt" ]
-  [ ! -L "${tgt}/b.txt" ]
-  [ "$(cat "${tgt}/b.txt")" = "existing" ]
 }
