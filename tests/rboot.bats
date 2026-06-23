@@ -41,60 +41,70 @@ _call_resolve() {
 # Helper: source rboot and call expand_templates in a subprocess.
 # All needed env vars are forwarded explicitly via env(1) prefix.
 _expand() {
-  env HOME="$HOME" REPO_ROOT="$REPO_DIR" bash -c "
+  # _expand <string> <repo_root> <config_path>
+  env HOME="$HOME" REPO_ROOT="$REPO_DIR" RBOOT_CONFIG="$RBOOT_CONFIG" bash -c "
     source '${RBOOT}'
-    expand_templates \"\$1\" \"\$2\"
-  " -- "$1" "$2"
+    expand_templates \"\$1\" \"\$2\" \"\$3\"
+  " -- "$1" "$2" "$3"
 }
 
 @test "expand_templates: expands ~ to HOME" {
-  result=$(_expand "~/some/path" "$REPO_DIR")
+  result=$(_expand "~/some/path" "$REPO_DIR" "$CONFIG_PATH")
   [ "$result" = "${HOME}/some/path" ]
 }
 
-@test "expand_templates: expands {{repo_root}}" {
-  result=$(_expand "{{repo_root}}/.claude" "$REPO_DIR")
+@test "expand_templates: expands {{current_repo_root}}" {
+  result=$(_expand "{{current_repo_root}}/.claude" "$REPO_DIR" "$CONFIG_PATH")
   [ "$result" = "${REPO_DIR}/.claude" ]
 }
 
-@test "expand_templates: expands {{claude_projects_dir}} with default" {
-  result=$(_expand "{{claude_projects_dir}}/foo" "$REPO_DIR")
-  [ "$result" = "${HOME}/.claude/projects/foo" ]
+@test "expand_templates: expands {{current_repo_root_encoded}}" {
+  local expected="${REPO_DIR//\//-}"
+  expected="${expected//./-}"
+  result=$(_expand "{{current_repo_root_encoded}}" "$REPO_DIR" "$CONFIG_PATH")
+  [ "$result" = "$expected" ]
 }
 
-@test "expand_templates: honours CLAUDE_PROJECTS_DIR env var" {
-  local custom="${HOME}/custom"
-  result=$(env HOME="$HOME" REPO_ROOT="$REPO_DIR" CLAUDE_PROJECTS_DIR="$custom" bash -c "
-    source '${RBOOT}'
-    expand_templates '{{claude_projects_dir}}/foo' '${REPO_DIR}'
-  ")
-  [ "$result" = "${custom}/foo" ]
+@test "expand_templates: expands {{config_path}}" {
+  result=$(_expand "{{config_path}}/file.txt" "$REPO_DIR" "$CONFIG_PATH")
+  [ "$result" = "${CONFIG_PATH}/file.txt" ]
 }
 
-@test "expand_templates: silently skips worktree vars outside worktree" {
-  # REPO_ROOT/.git is a directory (main repo) — not a worktree
-  run env HOME="$HOME" REPO_ROOT="$REPO_DIR" bash -c "
+@test "expand_templates: silently skips {{parent_repo_root}} outside worktree" {
+  # Test repo has .git as a directory — not a worktree
+  run env HOME="$HOME" REPO_ROOT="$REPO_DIR" RBOOT_CONFIG="$RBOOT_CONFIG" bash -c "
     source '${RBOOT}'
-    expand_templates '{{worktree_encoded}}' '${REPO_DIR}'
+    expand_templates '{{parent_repo_root}}' '${REPO_DIR}' '${CONFIG_PATH}'
   "
   [ "$status" -ne 0 ]
   [ -z "$output" ]
 }
 
-@test "expand_templates: warns and fails on unknown variable" {
-  run env HOME="$HOME" REPO_ROOT="$REPO_DIR" bash -c "
+@test "expand_templates: silently skips {{parent_repo_encoded}} outside worktree" {
+  run env HOME="$HOME" REPO_ROOT="$REPO_DIR" RBOOT_CONFIG="$RBOOT_CONFIG" bash -c "
     source '${RBOOT}'
-    expand_templates '{{unknown_var}}' '${REPO_DIR}'
+    expand_templates '{{parent_repo_encoded}}' '${REPO_DIR}' '${CONFIG_PATH}'
   "
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "expand_templates: warns on removed variable {{repo_root}}" {
+  run _expand "{{repo_root}}/foo" "$REPO_DIR" "$CONFIG_PATH"
   [ "$status" -ne 0 ]
   [[ "$output" == *"unknown template variable"* ]]
 }
 
-# Helper: write links array to the config
-write_setup_json() {
-  local links
-  links=$(cat)
-  write_links <<< "$links"
+@test "expand_templates: warns on removed variable {{claude_projects_dir}}" {
+  run _expand "{{claude_projects_dir}}/foo" "$REPO_DIR" "$CONFIG_PATH"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unknown template variable"* ]]
+}
+
+@test "expand_templates: warns and fails on unknown variable" {
+  run _expand "{{unknown_var}}" "$REPO_DIR" "$CONFIG_PATH"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unknown template variable"* ]]
 }
 
 @test "apply_config: creates file symlink from links array" {
@@ -106,7 +116,7 @@ write_setup_json() {
 {
   "links": [
     { "from": "~/.rboot/testrepo/.claude/settings.json",
-      "to": "{{repo_root}}/.claude/settings.json" }
+      "to": "{{current_repo_root}}/.claude/settings.json" }
   ]
 }
 EOF
@@ -126,7 +136,7 @@ EOF
 {
   "links": [
     { "from": "~/.rboot/testrepo/docs/superpowers",
-      "to": "{{repo_root}}/docs/superpowers" }
+      "to": "{{current_repo_root}}/docs/superpowers" }
   ]
 }
 EOF
@@ -143,7 +153,7 @@ EOF
   ln -sf "$src" "${REPO_DIR}/file.txt"
 
   write_setup_json <<EOF
-{ "links": [{ "from": "~/.rboot/testrepo/file.txt", "to": "{{repo_root}}/file.txt" }] }
+{ "links": [{ "from": "~/.rboot/testrepo/file.txt", "to": "{{current_repo_root}}/file.txt" }] }
 EOF
 
   run bash "$RBOOT" run
@@ -160,7 +170,7 @@ EOF
   ln -sf "$wrong_target" "${REPO_DIR}/file.txt"
 
   write_setup_json <<EOF
-{ "links": [{ "from": "~/.rboot/testrepo/file.txt", "to": "{{repo_root}}/file.txt" }] }
+{ "links": [{ "from": "~/.rboot/testrepo/file.txt", "to": "{{current_repo_root}}/file.txt" }] }
 EOF
 
   run bash "$RBOOT" run
@@ -172,7 +182,7 @@ EOF
 
 @test "apply_config: warns and skips missing config-dir source" {
   write_setup_json <<EOF
-{ "links": [{ "from": "~/.rboot/testrepo/missing.txt", "to": "{{repo_root}}/missing.txt" }] }
+{ "links": [{ "from": "~/.rboot/testrepo/missing.txt", "to": "{{current_repo_root}}/missing.txt" }] }
 EOF
 
   run bash "$RBOOT" run
@@ -187,7 +197,7 @@ EOF
   echo "managed" > "$src"
 
   write_setup_json <<EOF
-{ "links": [{ "from": "~/.rboot/testrepo/protected.txt", "to": "{{repo_root}}/protected.txt" }] }
+{ "links": [{ "from": "~/.rboot/testrepo/protected.txt", "to": "{{current_repo_root}}/protected.txt" }] }
 EOF
 
   run bash "$RBOOT" run
@@ -198,32 +208,31 @@ EOF
 }
 
 @test "apply_config: skips worktree entries when not in a worktree" {
-  # Claude projects dir exists but no worktree
-  mkdir -p "${HOME}/.claude/projects"
+  # Test repo has .git as a directory (main repo) — parent_repo_* vars should be skipped silently
+  local proj_dir="${HOME}/.claude/projects"
+  mkdir -p "$proj_dir"
 
   write_setup_json <<EOF
 {
   "links": [
-    { "from": "{{claude_projects_dir}}/{{main_encoded}}",
-      "to": "{{claude_projects_dir}}/{{worktree_encoded}}" }
+    { "from": "{{parent_repo_root}}/.claude",
+      "to": "{{current_repo_root}}/.claude-linked" }
   ]
 }
 EOF
 
   run bash "$RBOOT" run
   [ "$status" -eq 0 ]
-  # No symlinks created in claude projects dir
-  [ -z "$(ls -A "${HOME}/.claude/projects")" ]
+  # No symlink created because parent_repo_root skips silently outside worktree
+  [ ! -e "${REPO_DIR}/.claude-linked" ]
 }
 
-@test "apply_config: silently skips when claude_projects_dir missing" {
-  # Do NOT create ~/.claude/projects
-
+@test "apply_config: silently skips when parent_repo_encoded used outside worktree" {
   write_setup_json <<EOF
 {
   "links": [
-    { "from": "{{claude_projects_dir}}/{{main_encoded}}",
-      "to": "{{claude_projects_dir}}/{{worktree_encoded}}" }
+    { "from": "~/some/path",
+      "to": "~/other/{{parent_repo_encoded}}" }
   ]
 }
 EOF
@@ -255,7 +264,7 @@ EOF
   run jq -r '.links[0].from' "$cfg"
   [ "$output" = "~/.rboot/testrepo/myfile.txt" ]
   run jq -r '.links[0].to' "$cfg"
-  [ "$output" = "{{repo_root}}/myfile.txt" ]
+  [ "$output" = "{{current_repo_root}}/myfile.txt" ]
 }
 
 @test "update_config: does not add duplicate links entries" {
@@ -291,7 +300,7 @@ EOF
   echo "existing" > "${tgt}/b.txt"
 
   write_setup_json <<EOF
-{ "links": [{ "from": "~/.rboot/testrepo/mydir", "to": "{{repo_root}}/mydir" }] }
+{ "links": [{ "from": "~/.rboot/testrepo/mydir", "to": "{{current_repo_root}}/mydir" }] }
 EOF
 
   run bash "$RBOOT" run

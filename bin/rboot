@@ -49,8 +49,8 @@ apply_config() {
 
     # Expand templates; skip entry if either expansion signals failure
     local resolved_from resolved_to
-    resolved_from=$(expand_templates "$raw_from" "$repo_root") || continue
-    resolved_to=$(expand_templates   "$raw_to"   "$repo_root") || continue
+    resolved_from=$(expand_templates "$raw_from" "$repo_root" "$config_path") || continue
+    resolved_to=$(expand_templates   "$raw_to"   "$repo_root" "$config_path") || continue
 
     # [1] claude_projects_dir missing: silent skip
     if [[ "$resolved_to" == "$claude_dir"* && ! -d "$claude_dir" ]]; then
@@ -185,12 +185,12 @@ resolve_rel() {
 }
 
 # update_config <cfg_path> <rel>
-# Appends { "from": "~/repos/.repo-config/<REPO_NAME>/<rel>", "to": "{{repo_root}}/<rel>" }
+# Appends { "from": "~/.rboot/<REPO_NAME>/<rel>", "to": "{{current_repo_root}}/<rel>" }
 # to links[] if not already present. Atomic write.
 update_config() {
   local cfg="$1" rel="$2" tmp
   local from_val="~/repos/.repo-config/${REPO_NAME}/${rel}"
-  local to_val="{{repo_root}}/${rel}"
+  local to_val="{{current_repo_root}}/${rel}"
   tmp=$(mktemp "${cfg}.XXXXXX") || return 1
   if jq --arg from "$from_val" --arg to "$to_val" '
         .links = (.links // [])
@@ -260,57 +260,57 @@ encode_claude_path() {
   printf '%s\n' "${p//./-}"
 }
 
-# _MAIN_ROOT / _MAIN_ROOT_FAILED — cached worktree state, computed once per run.
-_MAIN_ROOT=""
-_MAIN_ROOT_FAILED=false
+# is_worktree <path>
+# Returns 0 if the git repo at <path> is a worktree (not a main repo or submodule).
+# Uses git rev-parse: --git-dir differs from --git-common-dir only in a worktree.
+is_worktree() {
+  local path="${1:-.}" git_dir common_dir
+  git_dir=$(git -C "$path" rev-parse --git-dir 2>/dev/null) || return 1
+  common_dir=$(git -C "$path" rev-parse --git-common-dir 2>/dev/null) || return 1
+  [[ "$git_dir" != "$common_dir" ]]
+}
 
-# _ensure_main_root — populates _MAIN_ROOT or sets _MAIN_ROOT_FAILED.
-# Returns 1 if derivation fails (warning already printed).
-_ensure_main_root() {
-  [[ "$_MAIN_ROOT_FAILED" == "true" ]] && return 1
-  [[ -n "$_MAIN_ROOT" ]] && return 0
-  local mr
-  mr=$(git worktree list --porcelain | awk '/^worktree/{print $2; exit}')
+# _get_main_root <repo_root>
+# Prints the absolute path of the main worktree for the repo at <repo_root>.
+# Returns 1 and prints a warning if derivation fails.
+_get_main_root() {
+  local repo_root="$1" mr
+  mr=$(git -C "$repo_root" worktree list --porcelain | awk '/^worktree/{print $2; exit}')
   if [[ -z "$mr" ]]; then
     echo "  Warning: could not determine main worktree root — skipping worktree link entries" >&2
-    _MAIN_ROOT_FAILED=true; return 1
+    return 1
   fi
   mr=$(cd "$mr" && pwd -P) || {
     echo "  Warning: could not resolve main worktree root — skipping worktree link entries" >&2
-    _MAIN_ROOT_FAILED=true; return 1
+    return 1
   }
-  _MAIN_ROOT="$mr"
+  printf '%s\n' "$mr"
 }
 
-# expand_templates <string> <repo_root>
+# expand_templates <string> <repo_root> <config_path>
 # Expands template variables in <string>. Prints expanded value to stdout.
 # Returns 1 (no output) to signal "skip this entry":
-#   - worktree var used outside a worktree
+#   - {{parent_repo_*}} used outside a worktree
 #   - worktree list derivation fails
 #   - unknown template variable found
 expand_templates() {
-  local str="$1" repo_root="$2"
-  local claude_dir="${CLAUDE_PROJECTS_DIR:-${HOME}/.claude/projects}"
+  local str="$1" repo_root="$2" config_path="$3"
 
   # Expand leading ~
   str="${str/#\~/$HOME}"
 
-  # Substitute non-worktree variables
-  str="${str//\{\{repo_root\}\}/$repo_root}"
-  str="${str//\{\{claude_projects_dir\}\}/$claude_dir}"
+  # Substitute always-available variables
+  str="${str//\{\{config_path\}\}/$config_path}"
+  str="${str//\{\{current_repo_root\}\}/$repo_root}"
+  str="${str//\{\{current_repo_root_encoded\}\}/$(encode_claude_path "$repo_root")}"
 
   # Handle worktree-only variables
-  if [[ "$str" == *"{{worktree_encoded}}"* || "$str" == *"{{main_encoded}}"* ]]; then
-    # Must be inside a worktree (.git is a file, not a directory)
-    if [[ ! -f "${REPO_ROOT}/.git" ]]; then
-      return 1  # silent skip
-    fi
-    _ensure_main_root || return 1
-    local worktree_encoded main_encoded
-    worktree_encoded=$(encode_claude_path "$REPO_ROOT")
-    main_encoded=$(encode_claude_path "$_MAIN_ROOT")
-    str="${str//\{\{worktree_encoded\}\}/$worktree_encoded}"
-    str="${str//\{\{main_encoded\}\}/$main_encoded}"
+  if [[ "$str" == *"{{parent_repo_root}}"* || "$str" == *"{{parent_repo_encoded}}"* ]]; then
+    is_worktree "$repo_root" || return 1  # silent skip: not a worktree
+    local main_root
+    main_root=$(_get_main_root "$repo_root") || return 1
+    str="${str//\{\{parent_repo_root\}\}/$main_root}"
+    str="${str//\{\{parent_repo_encoded\}\}/$(encode_claude_path "$main_root")}"
   fi
 
   # Detect remaining unknown variables
