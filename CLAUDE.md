@@ -10,34 +10,59 @@ make uninstall  # remove the symlink
 ## Commands
 
 ```bash
-rboot run           # apply symlink config for current repo + link Claude worktree memory
-rboot add <path>    # move file/dir into config and replace with a symlink
+rboot run           # apply symlink config for current repo (+ nested repos)
+rboot add <path>    # move file/dir into config_path and replace with a symlink
 rboot help          # show usage
 ```
 
 ## Architecture
 
 ```
-bin/rboot                        # single bash script — all logic lives here
-repos/                           # gitignored config dir (one subdir per repo)
-repos/<name>/setup.json          # declares files[] and directories[] to symlink
-repos/<name>/<path>              # the actual managed file or directory
+bin/rboot                              # single bash script — all logic lives here
+~/.config/rboot/config.json           # global config — all repos in one file
 ```
 
-`<name>` is derived from `basename $(git remote get-url origin)` (strips `.git`).
+`~/.config/rboot/config.json` structure:
+
+```json
+{
+  "repos": {
+    "<repo-name>": {
+      "config_path": "~/optional/path",
+      "links": [
+        { "from": "{{config_path}}/file", "to": "{{current_repo_root}}/file" }
+      ]
+    }
+  }
+}
+```
+
+`<repo-name>` is derived from `basename $(git remote get-url origin)` (strips `.git`).
+`config_path` defaults to `~/.rboot/<repo-name>/` when not set.
 
 ## Key Patterns
 
-- `RBOOT_CONFIG_DIR` overrides the `repos/` directory location
-- `CLAUDE_PROJECTS_DIR` overrides `~/.claude/projects`
-- `rboot run` inside a git worktree symlinks that worktree's Claude project dir to the main repo's so memories are shared
 - All loops use process substitution `< <(...)`, not pipes — preserves `set -euo pipefail`
-- Directory symlink strategy: symlink the whole dir if target doesn't exist; merge children into target if it's a real directory
+- `links[]` entries use `{ "from": "...", "to": "..." }` objects with template variables
+- Directory symlink strategy: symlink the whole dir if `to` doesn't exist; merge children into `to` if it's a real directory (config_path source only)
+- `is_worktree(path)` uses `git -C path rev-parse --git-dir vs --git-common-dir` — correctly distinguishes worktrees from submodules
+
+## Template Variables
+
+| Variable | Resolves to |
+|---|---|
+| `{{config_path}}` | Per-repo `config_path` value (or `~/.rboot/<name>/`) |
+| `{{current_repo_root}}` | Absolute path of the repo being processed |
+| `{{current_repo_root_encoded}}` | `encode_claude_path(current_repo_root)` |
+| `{{parent_repo_root}}` | Main worktree root (worktree only) |
+| `{{parent_repo_encoded}}` | `encode_claude_path(main_worktree_root)` (worktree only) |
+
+`~` at the start of any value expands to `$HOME`. `config_path` values are not themselves template-expanded.
 
 ## Gotchas
 
-- `repos/` must exist before `rboot run` works — it is not auto-created
-- `setup.json` is created automatically by `rboot add`; no need to create it manually
+- `~/.config/rboot/config.json` must exist before `rboot run` works — it is not auto-created
 - `encode_claude_path` replaces both `/` and `.` with `-` (not just `/`)
 - `git worktree list --porcelain`: first entry is always the main worktree
-- `.gitignore` covers `repos/` and `docs/superpowers` — neither is tracked
+- `shopt -p dotglob || true` — required: `shopt -p` exits 1 when option is off, kills script under `set -euo pipefail`
+- Worktree-only variables (`{{parent_repo_*}}`) skip silently in non-worktrees and in submodules (not just main repos)
