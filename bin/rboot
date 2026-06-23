@@ -1,16 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Resolve the real script location, following symlinks (e.g. when invoked via
-# the rboot symlink in ~/.local/bin).
-SOURCE="${BASH_SOURCE[0]}"
-while [[ -L "$SOURCE" ]]; do
-  dir="$(cd "$(dirname "$SOURCE")" && pwd)"
-  SOURCE="$(readlink "$SOURCE")"
-  [[ "$SOURCE" != /* ]] && SOURCE="${dir}/${SOURCE}"
-done
-SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
-CONFIG_DIR="${RBOOT_CONFIG_DIR:-${SCRIPT_DIR}/../repos}"
+CONFIG_DIR="${HOME}/repos/.repo-config"
 
 # repo_name_from <repo_root>
 # Echoes the config name for a repo, derived from its git remote origin URL.
@@ -22,13 +13,14 @@ repo_name_from() {
 }
 
 # apply_config <repo_name> <repo_root> <indent> [required]
-# Applies the symlink config (files + directories) for a single repo.
+# Applies the symlink config (links[]) for a single repo.
 apply_config() {
   local repo_name="$1"
   local repo_root="$2"
   local indent="${3:-}"
   local required="${4:-false}"
   local config_file="${CONFIG_DIR}/${repo_name}/setup.json"
+  local claude_dir="${CLAUDE_PROJECTS_DIR:-${HOME}/.claude/projects}"
 
   if [[ ! -f "$config_file" ]]; then
     if [[ "$required" == "true" ]]; then
@@ -40,58 +32,84 @@ apply_config() {
 
   echo "${indent}Running setup for ${repo_name}..."
 
-  # Symlink files
-  while IFS= read -r file; do
-    local source="${CONFIG_DIR}/${repo_name}/${file}"
-    local target="${repo_root}/${file}"
+  while IFS= read -r entry; do
+    local raw_from raw_to
+    raw_from=$(jq -r '.from' <<< "$entry")
+    raw_to=$(jq -r '.to'   <<< "$entry")
 
-    if [[ ! -f "$source" && ! -L "$source" ]]; then
-      echo "${indent}  Warning: ${source} not found — skipping"
+    # Expand templates; skip entry if either expansion signals failure
+    local resolved_from resolved_to
+    resolved_from=$(expand_templates "$raw_from" "$repo_root") || continue
+    resolved_to=$(expand_templates   "$raw_to"   "$repo_root") || continue
+
+    # [1] claude_projects_dir missing: silent skip
+    if [[ "$resolved_to" == "$claude_dir"* && ! -d "$claude_dir" ]]; then
       continue
     fi
 
-    mkdir -p "$(dirname "$target")"
-    ln -sf "$source" "$target"
-    echo "${indent}  Symlinked ${file} -> ${source}"
-  done < <(jq -r '.files[]?' "$config_file")
-
-  # Symlink directories
-  # - If the target does not exist (or is already a symlink), replace it with a
-  #   single symlink to the source directory.
-  # - If the target is a real directory, merge: symlink each child of the source
-  #   into the target, replacing any existing children.
-  while IFS= read -r dir; do
-    local source="${CONFIG_DIR}/${repo_name}/${dir}"
-    local target="${repo_root}/${dir}"
-
-    if [[ ! -d "$source" && ! -L "$source" ]]; then
-      echo "${indent}  Warning: ${source} not found — skipping"
+    # [2] destination is a real file: warn + skip
+    if [[ -f "$resolved_to" && ! -L "$resolved_to" ]]; then
+      echo "${indent}  Warning: ${resolved_to} is a real file — skipping" >&2
       continue
     fi
 
-    if [[ -d "$target" && ! -L "$target" ]]; then
-      local _dotglob_was
-      _dotglob_was=$(shopt -p dotglob)
-      shopt -u dotglob
-      for child_path in "$source"/* "$source"/.[!.]*; do
-        [[ -e "$child_path" || -L "$child_path" ]] || continue
-        local child_name
-        child_name=$(basename "$child_path")
-        local child_target="${target}/${child_name}"
-        if [[ -e "$child_target" || -L "$child_target" ]]; then
-          echo "${indent}  Skipped ${dir}/${child_name} — already exists"
-          continue
-        fi
-        ln -sfn "$child_path" "$child_target"
-        echo "${indent}  Symlinked ${dir}/${child_name} -> ${child_path}"
-      done
-      eval "$_dotglob_was"
-    else
-      mkdir -p "$(dirname "$target")"
-      ln -sfn "$source" "$target"
-      echo "${indent}  Symlinked ${dir} -> ${source}"
+    # [3] idempotent: already correctly symlinked
+    if [[ -L "$resolved_to" ]] && \
+       [[ "$(readlink "$resolved_to")" == "$resolved_from" ]]; then
+      continue
     fi
-  done < <(jq -r '.directories[]?' "$config_file")
+
+    # [4] wrong symlink: warn and fall through to overwrite
+    if [[ -L "$resolved_to" ]]; then
+      echo "${indent}  Warning: replacing existing link at $(basename "$resolved_to") (was: $(readlink "$resolved_to"))" >&2
+    fi
+
+    # [5] config-dir source missing: warn + skip (must precede directory-merge check)
+    if [[ "$resolved_from" == "$CONFIG_DIR"/* ]] && \
+       [[ ! -e "$resolved_from" && ! -L "$resolved_from" ]]; then
+      echo "${indent}  Warning: ${resolved_from} not found — skipping" >&2
+      continue
+    fi
+
+    # [6] destination is a real directory
+    if [[ -d "$resolved_to" && ! -L "$resolved_to" ]]; then
+      if [[ "$resolved_from" == "$CONFIG_DIR"/* ]]; then
+        # Directory merge: symlink only missing children
+        local _dotglob_was
+        _dotglob_was=$(shopt -p dotglob) || true
+        shopt -u dotglob
+        for child_path in "$resolved_from"/* "$resolved_from"/.[!.]*; do
+          [[ -e "$child_path" || -L "$child_path" ]] || continue
+          local child_name
+          child_name=$(basename "$child_path")
+          local child_target="${resolved_to}/${child_name}"
+          if [[ -e "$child_target" || -L "$child_target" ]]; then
+            echo "${indent}  Skipped ${child_name} — already exists"
+            continue
+          fi
+          ln -sfn "$child_path" "$child_target"
+          echo "${indent}  Symlinked $(basename "$resolved_to")/${child_name} -> ${child_path}"
+        done
+        eval "$_dotglob_was"
+      else
+        echo "${indent}  Warning: ${resolved_to} is a real directory and source is external — skipping" >&2
+      fi
+      continue
+    fi
+
+    # [7] create symlink
+    local link_flag="-sf"
+    if [[ -d "$resolved_from" ]]; then
+      link_flag="-sfn"
+    elif [[ ! -e "$resolved_from" ]]; then
+      link_flag="-sfn"  # external non-existent: default to directory symlink
+    fi
+
+    mkdir -p "$(dirname "$resolved_to")"
+    ln $link_flag "$resolved_from" "$resolved_to"
+    echo "${indent}  Symlinked $(basename "$resolved_to") -> ${resolved_from}"
+
+  done < <(jq -c '.links[]?' "$config_file")
 }
 
 usage() {
@@ -108,7 +126,7 @@ EOF
 require_env() {
   if [[ ! -d "$CONFIG_DIR" ]]; then
     echo "Error: config directory not found at ${CONFIG_DIR}." >&2
-    echo "       (resolved script dir: ${SCRIPT_DIR})" >&2
+    echo "       Create it with: mkdir -p ${CONFIG_DIR}" >&2
     exit 1
   fi
   git rev-parse --is-inside-work-tree &>/dev/null || { echo "Error: not inside a git repository." >&2; exit 1; }
@@ -138,14 +156,20 @@ resolve_rel() {
   printf '%s\n' "$rel"
 }
 
-# update_config — atomic, idempotent setup.json write.
-update_config() {   # <cfg_path> <rel> <files|directories>
-  local cfg="$1" rel="$2" key="$3" tmp
+# update_config <cfg_path> <rel>
+# Appends { "from": "~/repos/.repo-config/<REPO_NAME>/<rel>", "to": "{{repo_root}}/<rel>" }
+# to links[] if not already present. Atomic write.
+update_config() {
+  local cfg="$1" rel="$2" tmp
+  local from_val="~/repos/.repo-config/${REPO_NAME}/${rel}"
+  local to_val="{{repo_root}}/${rel}"
   tmp=$(mktemp "${cfg}.XXXXXX") || return 1
-  if jq --arg p "$rel" --arg key "$key" '
-        .files = (.files // [])
-        | .directories = (.directories // [])
-        | if (.[$key] | index($p)) then . else .[$key] += [$p] end
+  if jq --arg from "$from_val" --arg to "$to_val" '
+        .links = (.links // [])
+        | if (.links | map(select(.from == $from and .to == $to)) | length) > 0
+          then .
+          else .links += [{"from": $from, "to": $to}]
+          end
       ' "$cfg" > "$tmp"; then
     mv "$tmp" "$cfg"
   else
@@ -155,11 +179,10 @@ update_config() {   # <cfg_path> <rel> <files|directories>
 
 # add_one — validate-then-mutate, set -e-safe.
 add_one() {
-  local arg="$1" rel dest src key cfg label
+  local arg="$1" rel dest src cfg
   if [[ -L "$arg" ]]; then echo "Skip: '$arg' is already a symlink (already managed by rboot)." >&2; return 1; fi
   if [[ ! -e "$arg" ]]; then echo "Error: '$arg' does not exist." >&2; return 1; fi
   rel=$(resolve_rel "$arg") || { echo "Error: '$arg' is outside the repository." >&2; return 1; }
-  if [[ -d "$arg" ]]; then key=directories; else key=files; fi
   dest="${CONFIG_DIR}/${REPO_NAME}/${rel}"
   src="${REPO_ROOT}/${rel}"
   if [[ -e "$dest" || -L "$dest" ]]; then
@@ -167,7 +190,7 @@ add_one() {
 
   cfg="${CONFIG_DIR}/${REPO_NAME}/setup.json"
   mkdir -p "${CONFIG_DIR}/${REPO_NAME}"
-  [[ -f "$cfg" ]] || printf '{\n    "files": [],\n    "directories": []\n}\n' > "$cfg"
+  [[ -f "$cfg" ]] || printf '{\n    "links": []\n}\n' > "$cfg"
 
   mkdir -p "$(dirname "$dest")"
   if ! mv "$src" "$dest"; then echo "Error: failed to move ${src} -> ${dest}." >&2; return 1; fi
@@ -176,7 +199,7 @@ add_one() {
   if ! ln -sfn "$dest" "$src"; then
     echo "Error: failed to create symlink; rolling back move." >&2; mv "$dest" "$src"; return 1; fi
 
-  if ! update_config "$cfg" "$rel" "$key"; then
+  if ! update_config "$cfg" "$rel"; then
     echo "Error: failed to update ${cfg}; rolling back move." >&2
     rm -f "$src"
     mv "$dest" "$src"
@@ -186,8 +209,8 @@ add_one() {
   if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$rel" &>/dev/null; then
     echo "Warning: '${rel}' was git-tracked; the symlink will now show as a change. Update .gitignore yourself if desired." >&2; fi
 
-  if [[ "$key" == "directories" ]]; then label="directory"; else label="file"; fi
-  echo "Added ${rel} (${label}) -> ${dest}"
+  local from_display="~/repos/.repo-config/${REPO_NAME}/${rel}"
+  echo "Added ${rel} -> ${from_display}"
 }
 
 # cmd_add — batch with per-path continue.
@@ -209,60 +232,66 @@ encode_claude_path() {
   printf '%s\n' "${p//./-}"
 }
 
-# link_claude_project — symlink the current worktree's Claude project dir to
-# the main repo's Claude project dir so memories are shared.
-# No-op when not in a worktree or when the Claude projects dir doesn't exist.
-link_claude_project() {
-  # Skip if not in a worktree (.git is a directory in the main repo)
-  [[ -f "$REPO_ROOT/.git" ]] || return 0
+# _MAIN_ROOT / _MAIN_ROOT_FAILED — cached worktree state, computed once per run.
+_MAIN_ROOT=""
+_MAIN_ROOT_FAILED=false
 
-  # Derive main repo root from the first entry in the worktree list (always the main worktree)
-  local main_root
-  main_root=$(git worktree list --porcelain | awk '/^worktree/{print $2; exit}')
-  if [[ -z "$main_root" ]]; then
-    echo "  Warning: could not determine main worktree root — skipping Claude link" >&2
-    return 0
+# _ensure_main_root — populates _MAIN_ROOT or sets _MAIN_ROOT_FAILED.
+# Returns 1 if derivation fails (warning already printed).
+_ensure_main_root() {
+  [[ "$_MAIN_ROOT_FAILED" == "true" ]] && return 1
+  [[ -n "$_MAIN_ROOT" ]] && return 0
+  local mr
+  mr=$(git worktree list --porcelain | awk '/^worktree/{print $2; exit}')
+  if [[ -z "$mr" ]]; then
+    echo "  Warning: could not determine main worktree root — skipping worktree link entries" >&2
+    _MAIN_ROOT_FAILED=true; return 1
   fi
-  main_root=$(cd "$main_root" && pwd -P) || {
-    echo "  Warning: could not resolve main worktree root — skipping Claude link" >&2
-    return 0
+  mr=$(cd "$mr" && pwd -P) || {
+    echo "  Warning: could not resolve main worktree root — skipping worktree link entries" >&2
+    _MAIN_ROOT_FAILED=true; return 1
   }
+  _MAIN_ROOT="$mr"
+}
 
-  # Guard: verify main_root is a real git repo root (protects against bare/detached git-dir layouts)
-  git -C "$main_root" rev-parse --show-toplevel &>/dev/null || {
-    echo "  Warning: could not verify main repo root at ${main_root} — skipping Claude link" >&2
-    return 0
-  }
-
-  # Compute Claude project directory paths
+# expand_templates <string> <repo_root>
+# Expands template variables in <string>. Prints expanded value to stdout.
+# Returns 1 (no output) to signal "skip this entry":
+#   - worktree var used outside a worktree
+#   - worktree list derivation fails
+#   - unknown template variable found
+expand_templates() {
+  local str="$1" repo_root="$2"
   local claude_dir="${CLAUDE_PROJECTS_DIR:-${HOME}/.claude/projects}"
-  local worktree_project_dir="${claude_dir}/$(encode_claude_path "$REPO_ROOT")"
-  local main_project_dir="${claude_dir}/$(encode_claude_path "$main_root")"
-  local wt_rel="${REPO_ROOT#"${main_root}/"}"
 
-  # Skip silently if Claude projects dir doesn't exist
-  [[ -d "$claude_dir" ]] || return 0
+  # Expand leading ~
+  str="${str/#\~/$HOME}"
 
-  # Warn and skip if worktree project dir is a real directory (not a symlink)
-  if [[ -d "$worktree_project_dir" && ! -L "$worktree_project_dir" ]]; then
-    echo "  Warning: Claude project dir for ${wt_rel} is a real directory — skipping link" >&2
-    return 0
+  # Substitute non-worktree variables
+  str="${str//\{\{repo_root\}\}/$repo_root}"
+  str="${str//\{\{claude_projects_dir\}\}/$claude_dir}"
+
+  # Handle worktree-only variables
+  if [[ "$str" == *"{{worktree_encoded}}"* || "$str" == *"{{main_encoded}}"* ]]; then
+    # Must be inside a worktree (.git is a file, not a directory)
+    if [[ ! -f "${REPO_ROOT}/.git" ]]; then
+      return 1  # silent skip
+    fi
+    _ensure_main_root || return 1
+    local worktree_encoded main_encoded
+    worktree_encoded=$(encode_claude_path "$REPO_ROOT")
+    main_encoded=$(encode_claude_path "$_MAIN_ROOT")
+    str="${str//\{\{worktree_encoded\}\}/$worktree_encoded}"
+    str="${str//\{\{main_encoded\}\}/$main_encoded}"
   fi
 
-  # readlink (BSD/macOS) returns the raw link target — correct here because
-  # $main_project_dir is always absolute (derived from pwd -P above).
-  # Skip silently if already correctly symlinked
-  if [[ -L "$worktree_project_dir" ]] && \
-     [[ "$(readlink "$worktree_project_dir")" == "$main_project_dir" ]]; then
-    return 0
+  # Detect remaining unknown variables
+  if [[ "$str" =~ \{\{[a-zA-Z0-9_]+\}\} ]]; then
+    echo "  Warning: unknown template variable in '${str}' — skipping entry" >&2
+    return 1
   fi
 
-  # Create (or replace) the symlink; warn if replacing an existing mismatched link
-  if [[ -L "$worktree_project_dir" ]]; then
-    echo "  Warning: replacing existing Claude project link for ${wt_rel} (was: $(readlink "$worktree_project_dir"))" >&2
-  fi
-  ln -sfn "$main_project_dir" "$worktree_project_dir"
-  echo "  Linked Claude project: ${wt_rel} -> $(basename "$main_root")"
+  printf '%s\n' "$str"
 }
 
 # cmd_run — apply symlink config for current repo + nested repos.
@@ -286,14 +315,15 @@ cmd_run() {
              -path "$REPO_ROOT/.worktrees/*" -prune -o \
              -name .git -print 2>/dev/null)
 
-  link_claude_project
   echo "Done."
 }
 
-case "${1:-}" in
-  run)             shift;         cmd_run ;;
-  add)             shift;         cmd_add "$@" ;;
-  -h|--help|help)  usage ;;
-  "")              usage ;;
-  *)               echo "Error: unknown command '$1'." >&2; usage >&2; exit 1 ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-}" in
+    run)             shift;         cmd_run ;;
+    add)             shift;         cmd_add "$@" ;;
+    -h|--help|help)  usage ;;
+    "")              usage ;;
+    *)               echo "Error: unknown command '$1'." >&2; usage >&2; exit 1 ;;
+  esac
+fi
