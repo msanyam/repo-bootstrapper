@@ -152,6 +152,20 @@ require_env() {
   fi
 }
 
+# resolve_config_path <repo_name>
+# Prints the absolute config_path for the named repo. Reads from RBOOT_CONFIG;
+# defaults to ~/.rboot/<name>/ if the key is absent.
+resolve_config_path() {
+  local name="$1" path
+  path=$(jq -r --arg n "$name" '.repos[$n].config_path // empty' "$RBOOT_CONFIG")
+  if [[ -z "$path" ]]; then
+    path="${HOME}/.rboot/${name}"
+  else
+    path="${path/#\~/$HOME}"
+  fi
+  printf '%s\n' "$path"
+}
+
 # resolve_rel — print repo-root-relative path; nonzero if missing/outside.
 resolve_rel() {
   local arg="$1" abs base dir

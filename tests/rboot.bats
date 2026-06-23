@@ -16,6 +16,28 @@ teardown() { rboot_teardown; }
   [ "$status" -eq 0 ]
 }
 
+_call_resolve() {
+  env HOME="$HOME" RBOOT_CONFIG="$RBOOT_CONFIG" bash -c "
+    source '${RBOOT}'
+    resolve_config_path \"\$1\"
+  " -- "$1"
+}
+
+@test "resolve_config_path: returns explicit config_path from global config" {
+  result=$(_call_resolve testrepo)
+  [ "$result" = "$CONFIG_PATH" ]
+}
+
+@test "resolve_config_path: returns default ~/.rboot/<name> when absent" {
+  # Remove config_path from the testrepo entry
+  local tmp; tmp=$(mktemp)
+  jq '.repos.testrepo |= del(.config_path)' "$RBOOT_CONFIG" > "$tmp"
+  mv "$tmp" "$RBOOT_CONFIG"
+
+  result=$(_call_resolve testrepo)
+  [ "$result" = "${HOME}/.rboot/testrepo" ]
+}
+
 # Helper: source rboot and call expand_templates in a subprocess.
 # All needed env vars are forwarded explicitly via env(1) prefix.
 _expand() {
