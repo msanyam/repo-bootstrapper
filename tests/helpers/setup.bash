@@ -37,15 +37,6 @@ rboot_setup() {
   cd "$REPO_DIR"
 }
 
-# Helper: write links from a JSON object to the config
-# Extracts .links from the input and passes to write_links
-write_setup_json() {
-  local obj links
-  obj=$(cat)
-  links=$(echo "$obj" | jq '.links')
-  write_links <<< "$links"
-}
-
 rboot_teardown() {
   local tmp_home="$HOME"
   export HOME="$ORIG_HOME"

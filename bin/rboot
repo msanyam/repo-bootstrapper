@@ -140,7 +140,10 @@ require_env() {
 # defaults to ~/.rboot/<name>/ if the key is absent.
 resolve_config_path() {
   local name="$1" path
-  path=$(jq -r --arg n "$name" '.repos[$n].config_path // empty' "$RBOOT_CONFIG")
+  if ! path=$(jq -r --arg n "$name" '.repos[$n].config_path // empty' "$RBOOT_CONFIG"); then
+    echo "Error: failed to parse ${RBOOT_CONFIG}" >&2
+    return 1
+  fi
   if [[ -z "$path" ]]; then
     path="${HOME}/.rboot/${name}"
   else
@@ -265,8 +268,12 @@ is_worktree() {
 # Prints the absolute path of the main worktree for the repo at <repo_root>.
 # Returns 1 and prints a warning if derivation fails.
 _get_main_root() {
-  local repo_root="$1" mr
-  mr=$(git -C "$repo_root" worktree list --porcelain | awk '/^worktree/{print $2; exit}')
+  local repo_root="$1" output mr
+  output=$(git -C "$repo_root" worktree list --porcelain 2>/dev/null) || {
+    echo "  Warning: could not determine main worktree root — skipping worktree link entries" >&2
+    return 1
+  }
+  mr=$(awk '/^worktree/{print $2; exit}' <<< "$output")
   if [[ -z "$mr" ]]; then
     echo "  Warning: could not determine main worktree root — skipping worktree link entries" >&2
     return 1
@@ -329,6 +336,8 @@ cmd_run() {
     case " $applied_names " in *" $sub_name "*) continue ;; esac
     applied_names="$applied_names $sub_name"
     apply_config "$sub_name" "$sub_root" "  "
+  # Note: only prune worktrees placed under .worktrees/; worktrees elsewhere are
+  # treated as separate repos (uncommon but possible with git worktree add <path>).
   done < <(find "$REPO_ROOT" -mindepth 2 \
              -path '*/node_modules/*' -prune -o \
              -path "$REPO_ROOT/.worktrees/*" -prune -o \

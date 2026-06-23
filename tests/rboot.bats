@@ -279,3 +279,56 @@ EOF
   [ -L "${REPO_DIR}/moveme.txt" ]
   [ "$(readlink "${REPO_DIR}/moveme.txt")" = "${CONFIG_PATH}/moveme.txt" ]
 }
+
+@test "is_worktree: returns 1 for main (non-worktree) repo" {
+  run env HOME="$HOME" RBOOT_CONFIG="$RBOOT_CONFIG" bash -c "
+    source '${RBOOT}'
+    is_worktree '${REPO_DIR}'
+  "
+  [ "$status" -eq 1 ]
+}
+
+@test "is_worktree: returns 0 for a git worktree" {
+  local wt_dir="${HOME}/testrepo-wt"
+  git -C "$REPO_DIR" worktree add -q "$wt_dir" -b wt-branch
+  run env HOME="$HOME" RBOOT_CONFIG="$RBOOT_CONFIG" bash -c "
+    source '${RBOOT}'
+    is_worktree '${wt_dir}'
+  "
+  git -C "$REPO_DIR" worktree remove --force "$wt_dir" 2>/dev/null || true
+  [ "$status" -eq 0 ]
+}
+
+@test "_get_main_root: returns main repo path from a worktree" {
+  local wt_dir="${HOME}/testrepo-wt2"
+  # Resolve REPO_DIR through pwd -P to match what _get_main_root returns (macOS /private symlink)
+  local repo_dir_real
+  repo_dir_real=$(cd "$REPO_DIR" && pwd -P)
+  git -C "$REPO_DIR" worktree add -q "$wt_dir" -b wt-branch2
+  result=$(env HOME="$HOME" RBOOT_CONFIG="$RBOOT_CONFIG" bash -c "
+    source '${RBOOT}'
+    _get_main_root '${wt_dir}'
+  ")
+  local exit_code
+  exit_code=$?
+  git -C "$REPO_DIR" worktree remove --force "$wt_dir" 2>/dev/null || true
+  [ $exit_code -eq 0 ]
+  [ "$result" = "$repo_dir_real" ]
+}
+
+@test "expand_templates: expands {{parent_repo_root}} inside a worktree" {
+  local wt_dir="${HOME}/testrepo-wt3"
+  # Resolve REPO_DIR through pwd -P to match what expand_templates returns (macOS /private symlink)
+  local repo_dir_real
+  repo_dir_real=$(cd "$REPO_DIR" && pwd -P)
+  git -C "$REPO_DIR" worktree add -q "$wt_dir" -b wt-branch3
+  result=$(env HOME="$HOME" RBOOT_CONFIG="$RBOOT_CONFIG" bash -c "
+    source '${RBOOT}'
+    expand_templates '{{parent_repo_root}}/.claude' '${wt_dir}' '${CONFIG_PATH}'
+  ")
+  local exit_code
+  exit_code=$?
+  git -C "$REPO_DIR" worktree remove --force "$wt_dir" 2>/dev/null || true
+  [ $exit_code -eq 0 ]
+  [ "$result" = "${repo_dir_real}/.claude" ]
+}
