@@ -23,21 +23,36 @@ rboot add .secrets/ config/local.json
 
 ## Config
 
-`repos/` holds one directory per repo (named by its git remote origin). It is gitignored — keep it in private storage or a backup.
+All config lives in a single file: `~/.rboot/config.json`. Create it before first use:
 
-```
-repos/
-  my-repo/
-    setup.json        # declares which files and dirs to symlink
-    .env              # the actual secret file
-    .secrets/         # a shared directory
+```bash
+mkdir -p ~/.rboot && echo '{}' > ~/.rboot/config.json
 ```
 
-`setup.json` is created automatically by `rboot add`. To write one manually:
+`rboot add` updates it automatically. To write an entry manually:
 
 ```json
 {
-  "files": [".env", "config/local.json"],
-  "directories": [".secrets"]
+  "repos": {
+    "my-repo": {
+      "links": [
+        { "from": "{{config_path}}/.env", "to": "{{current_repo_root}}/.env" },
+        { "from": "{{config_path}}/.secrets", "to": "{{current_repo_root}}/.secrets" }
+      ]
+    }
+  }
+}
+```
+
+The actual files (`.env`, `.secrets/`, etc.) live in `~/.rboot/<repo-name>/` by default. Override per-repo with a `config_path` key:
+
+```json
+{
+  "repos": {
+    "my-repo": {
+      "config_path": "~/Dropbox/rboot/my-repo",
+      "links": [...]
+    }
+  }
 }
 ```

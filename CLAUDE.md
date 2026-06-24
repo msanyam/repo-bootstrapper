@@ -18,11 +18,11 @@ rboot help          # show usage
 ## Architecture
 
 ```
-bin/rboot                              # single bash script — all logic lives here
-~/.config/rboot/config.json           # global config — all repos in one file
+bin/rboot                  # single bash script — all logic lives here
+~/.rboot/config.json       # global config — all repos in one file
 ```
 
-`~/.config/rboot/config.json` structure:
+`~/.rboot/config.json` structure:
 
 ```json
 {
@@ -61,7 +61,7 @@ bin/rboot                              # single bash script — all logic lives 
 
 ## Gotchas
 
-- `~/.config/rboot/config.json` must exist before `rboot run` works — it is not auto-created
+- `~/.rboot/config.json` must exist before `rboot run` works — it is not auto-created
 - `encode_claude_path` replaces both `/` and `.` with `-` (not just `/`)
 - `git worktree list --porcelain`: first entry is always the main worktree
 - `shopt -p dotglob || true` — required: `shopt -p` exits 1 when option is off, kills script under `set -euo pipefail`
