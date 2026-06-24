@@ -192,7 +192,13 @@ add_one() {
   local arg="$1" rel dest src config_path config_path_created=false
   if [[ -L "$arg" ]]; then echo "Skip: '$arg' is already a symlink (already managed by rboot)." >&2; return 1; fi
   if [[ ! -e "$arg" ]]; then echo "Error: '$arg' does not exist." >&2; return 1; fi
-  rel=$(resolve_rel "$arg") || { echo "Error: '$arg' is outside the repository." >&2; return 1; }
+  rel=$(resolve_rel "$arg") || {
+    case $? in
+      1) echo "Error: could not resolve path for '$arg'." >&2 ;;
+      *) echo "Error: '$arg' is outside the repository." >&2 ;;
+    esac
+    return 1
+  }
   config_path=$(resolve_config_path "$REPO_NAME")
   dest="${config_path}/${rel}"
   src="${REPO_ROOT}/${rel}"
@@ -264,16 +270,16 @@ is_worktree() {
 _get_main_root() {
   local repo_root="$1" output mr
   output=$(git -C "$repo_root" worktree list --porcelain 2>/dev/null) || {
-    echo "  Warning: could not determine main worktree root — skipping worktree link entries" >&2
+    echo "Warning: could not determine main worktree root — skipping worktree link entries" >&2
     return 1
   }
   mr=$(awk '/^worktree/{print $2; exit}' <<< "$output")
   if [[ -z "$mr" ]]; then
-    echo "  Warning: could not determine main worktree root — skipping worktree link entries" >&2
+    echo "Warning: could not determine main worktree root — skipping worktree link entries" >&2
     return 1
   fi
   mr=$(cd "$mr" && pwd -P) || {
-    echo "  Warning: could not resolve main worktree root — skipping worktree link entries" >&2
+    echo "Warning: could not resolve main worktree root — skipping worktree link entries" >&2
     return 1
   }
   printf '%s\n' "$mr"
@@ -294,7 +300,9 @@ expand_templates() {
   # Substitute always-available variables
   str="${str//\{\{config_path\}\}/$config_path}"
   str="${str//\{\{current_repo_root\}\}/$repo_root}"
-  str="${str//\{\{current_repo_root_encoded\}\}/$(encode_claude_path "$repo_root")}"
+  if [[ "$str" == *"{{current_repo_root_encoded}}"* ]]; then
+    str="${str//\{\{current_repo_root_encoded\}\}/$(encode_claude_path "$repo_root")}"
+  fi
 
   # Handle worktree-only variables
   if [[ "$str" == *"{{parent_repo_root}}"* || "$str" == *"{{parent_repo_encoded}}"* ]]; then
