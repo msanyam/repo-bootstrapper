@@ -8,7 +8,7 @@ teardown() { rboot_teardown; }
   rm -f "$RBOOT_CONFIG"
   run bash "$RBOOT" run
   [ "$status" -ne 0 ]
-  [[ "$output" == *".config/rboot/config.json"* ]]
+  [[ "$output" == *".rboot/config.json"* ]]
 }
 
 @test "rboot succeeds when repo entry exists with empty links" {
