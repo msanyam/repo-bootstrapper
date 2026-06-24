@@ -27,9 +27,9 @@ rboot_setup() {
   HOME="$(mktemp -d)"
   export REPO_DIR="${HOME}/testrepo"
   create_test_repo "$REPO_DIR" testrepo
-  export RBOOT_CONFIG="${HOME}/.config/rboot/config.json"
+  export RBOOT_CONFIG="${HOME}/.rboot/config.json"
   export CONFIG_PATH="${HOME}/.rboot/testrepo"
-  mkdir -p "${HOME}/.config/rboot"
+  mkdir -p "${HOME}/.rboot"
   mkdir -p "$CONFIG_PATH"
   jq -n --arg cp "$CONFIG_PATH" \
     '{"repos":{"testrepo":{"config_path":$cp,"links":[]}}}' \

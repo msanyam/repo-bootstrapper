@@ -8,7 +8,7 @@ teardown() { rboot_teardown; }
   rm -f "$RBOOT_CONFIG"
   run bash "$RBOOT" run
   [ "$status" -ne 0 ]
-  [[ "$output" == *".config/rboot/config.json"* ]]
+  [[ "$output" == *".rboot/config.json"* ]]
 }
 
 @test "rboot succeeds when repo entry exists with empty links" {
@@ -331,4 +331,13 @@ EOF
   git -C "$REPO_DIR" worktree remove --force "$wt_dir" 2>/dev/null || true
   [ $exit_code -eq 0 ]
   [ "$result" = "${repo_dir_real}/.claude" ]
+}
+
+@test "rboot add: succeeds on repo with no existing config entry" {
+  echo '{}' > "$RBOOT_CONFIG"
+  echo "content" > "${REPO_DIR}/newfile.txt"
+  run bash "$RBOOT" add newfile.txt
+  [ "$status" -eq 0 ]
+  run jq -r '.repos.testrepo.links[0].from' "$RBOOT_CONFIG"
+  [ "$output" = "{{config_path}}/newfile.txt" ]
 }

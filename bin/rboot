@@ -129,10 +129,6 @@ require_env() {
   [[ -n "$REPO_NAME" ]] || { echo "Error: could not determine repository name." >&2; exit 1; }
   [[ "$REPO_NAME" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "Error: unsafe repository name '${REPO_NAME}' (must match [a-zA-Z0-9._-]+)." >&2; exit 1; }
   REPO_ROOT=$(cd "$(git rev-parse --show-toplevel)" && pwd -P) || { echo "Error: could not resolve repository root." >&2; exit 1; }
-  if ! jq -e --arg n "$REPO_NAME" '.repos[$n]' "$RBOOT_CONFIG" >/dev/null 2>&1; then
-    echo "Error: no config entry for '${REPO_NAME}' in ${RBOOT_CONFIG}." >&2
-    exit 1
-  fi
 }
 
 # resolve_config_path <repo_name>
@@ -328,6 +324,7 @@ cmd_run() {
 
   local applied_names=""
   while IFS= read -r gitpath; do
+    local sub_root sub_name
     sub_root=$(dirname "$gitpath")
     sub_root=$(cd "$sub_root" && pwd -P) || continue
     sub_name=$(repo_name_from "$sub_root") || continue
