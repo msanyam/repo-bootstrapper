@@ -19,8 +19,6 @@ apply_config() {
   local repo_root="$2"
   local indent="${3:-}"
   local required="${4:-false}"
-  local config_path
-  config_path=$(resolve_config_path "$repo_name")
 
   if ! jq -e --arg n "$repo_name" '.repos[$n]' "$RBOOT_CONFIG" >/dev/null 2>&1; then
     if [[ "$required" == "true" ]]; then
@@ -30,12 +28,14 @@ apply_config() {
     return
   fi
 
+  local config_path
+  config_path=$(resolve_config_path "$repo_name")
+
   echo "${indent}Running setup for ${repo_name}..."
 
   while IFS= read -r entry; do
     local raw_from raw_to
-    raw_from=$(jq -r '.from' <<< "$entry")
-    raw_to=$(jq -r '.to'   <<< "$entry")
+    IFS=$'\t' read -r raw_from raw_to < <(jq -r '[.from,.to]|@tsv' <<< "$entry")
 
     local resolved_from resolved_to
     resolved_from=$(expand_templates "$raw_from" "$repo_root" "$config_path") || continue
@@ -92,9 +92,7 @@ apply_config() {
 
     # [6] create symlink
     local link_flag="-sf"
-    if [[ -d "$resolved_from" ]]; then
-      link_flag="-sfn"
-    elif [[ ! -e "$resolved_from" ]]; then
+    if [[ -d "$resolved_from" || ! -e "$resolved_from" ]]; then
       link_flag="-sfn"
     fi
 
