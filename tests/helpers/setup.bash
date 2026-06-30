@@ -42,3 +42,17 @@ rboot_teardown() {
   export HOME="$ORIG_HOME"
   rm -rf "$tmp_home"
 }
+
+# create_git_repo_no_remote <dir>
+create_git_repo_no_remote() {
+  local dir="$1"
+  mkdir -p "$dir"
+  git -C "$dir" init -q
+  git -C "$dir" commit --allow-empty -q -m "init"
+}
+
+# create_non_git_dir <dir>
+create_non_git_dir() {
+  local dir="$1"
+  mkdir -p "$dir"
+}

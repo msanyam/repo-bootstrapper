@@ -341,3 +341,50 @@ EOF
   run jq -r '.repos.testrepo.links[0].from' "$RBOOT_CONFIG"
   [ "$output" = "{{config_path}}/newfile.txt" ]
 }
+
+_call_repo_name_from() {
+  env HOME="$HOME" RBOOT_CONFIG="$RBOOT_CONFIG" bash -c "
+    source '${RBOOT}'
+    repo_name_from \"\$1\"
+  " -- "$1"
+}
+
+@test "rboot add: succeeds in git repo with no remote (uses dir basename as repo name)" {
+  local norepo_dir="${HOME}/norepo"
+  create_git_repo_no_remote "$norepo_dir"
+  echo "content" > "${norepo_dir}/testfile.txt"
+  echo '{}' > "$RBOOT_CONFIG"
+
+  run bash -c "cd '${norepo_dir}' && bash '$RBOOT' add testfile.txt"
+  [ "$status" -eq 0 ]
+
+  run jq -r '.repos.norepo' "$RBOOT_CONFIG"
+  [ "$output" != "null" ]
+
+  run jq -r '.repos.norepo.links[0].from' "$RBOOT_CONFIG"
+  [ "$output" = "{{config_path}}/testfile.txt" ]
+}
+
+@test "rboot add: succeeds in non-git directory (uses dir basename as repo name)" {
+  local nongit_dir="${HOME}/nongit"
+  create_non_git_dir "$nongit_dir"
+  echo "content" > "${nongit_dir}/testfile.txt"
+  echo '{}' > "$RBOOT_CONFIG"
+
+  run bash -c "cd '${nongit_dir}' && bash '$RBOOT' add testfile.txt"
+  [ "$status" -eq 0 ]
+
+  run jq -r '.repos.nongit' "$RBOOT_CONFIG"
+  [ "$output" != "null" ]
+
+  run jq -r '.repos.nongit.links[0].from' "$RBOOT_CONFIG"
+  [ "$output" = "{{config_path}}/testfile.txt" ]
+}
+
+@test "repo_name_from: falls back to basename when no remote configured" {
+  local norepo2_dir="${HOME}/norepo2"
+  create_git_repo_no_remote "$norepo2_dir"
+
+  result=$(_call_repo_name_from "${norepo2_dir}")
+  [ "$result" = "norepo2" ]
+}
