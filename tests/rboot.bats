@@ -35,7 +35,7 @@ _call_resolve() {
   mv "$tmp" "$RBOOT_CONFIG"
 
   result=$(_call_resolve testrepo)
-  [ "$result" = "${HOME}/.rboot/testrepo" ]
+  [ "$result" = "${HOME}/.rboot/repos/testrepo" ]
 }
 
 # Helper: source rboot and call expand_templates in a subprocess.
@@ -387,4 +387,16 @@ _call_repo_name_from() {
 
   result=$(_call_repo_name_from "${norepo2_dir}")
   [ "$result" = "norepo2" ]
+}
+
+@test "repo_name_from: uses main worktree dirname when in a worktree with no remote" {
+  local main_dir="${HOME}/slack-bot"
+  local wt_dir="${HOME}/slack-bot-worktrees/boston"
+  create_git_repo_no_remote "$main_dir"
+  git -C "$main_dir" worktree add -q "$wt_dir" -b wt-branch
+
+  result=$(_call_repo_name_from "$wt_dir")
+
+  git -C "$main_dir" worktree remove --force "$wt_dir" 2>/dev/null || true
+  [ "$result" = "slack-bot" ]
 }

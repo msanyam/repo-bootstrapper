@@ -38,7 +38,7 @@ bin/rboot                  # single bash script — all logic lives here
 ```
 
 `<repo-name>` is derived from `basename $(git remote get-url origin)` (strips `.git`).
-`config_path` defaults to `~/.rboot/<repo-name>/` when not set.
+`config_path` defaults to `~/.rboot/repos/<repo-name>/` when not set.
 
 ## Key Patterns
 
@@ -51,7 +51,7 @@ bin/rboot                  # single bash script — all logic lives here
 
 | Variable | Resolves to |
 |---|---|
-| `{{config_path}}` | Per-repo `config_path` value (or `~/.rboot/<name>/`) |
+| `{{config_path}}` | Per-repo `config_path` value (or `~/.rboot/repos/<name>/`) |
 | `{{current_repo_root}}` | Absolute path of the repo being processed |
 | `{{current_repo_root_encoded}}` | `encode_claude_path(current_repo_root)` |
 | `{{parent_repo_root}}` | Main worktree root (worktree only) |

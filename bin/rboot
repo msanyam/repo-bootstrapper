@@ -12,7 +12,12 @@ repo_name_from() {
     basename -s .git "$url"
     return 0
   fi
-  basename "$repo_root"
+  local main_root
+  if main_root=$(_get_main_root "$repo_root" 2>/dev/null) && [[ -n "$main_root" ]]; then
+    basename "$main_root"
+  else
+    basename "$repo_root"
+  fi
 }
 
 # apply_config <repo_name> <repo_root> <indent> [required]
@@ -136,7 +141,7 @@ require_env() {
 
 # resolve_config_path <repo_name>
 # Prints the absolute config_path for the named repo. Reads from RBOOT_CONFIG;
-# defaults to ~/.rboot/<name>/ if the key is absent.
+# defaults to ~/.rboot/repos/<name>/ if the key is absent.
 resolve_config_path() {
   local name="$1" path
   if ! path=$(jq -r --arg n "$name" '.repos[$n].config_path // empty' "$RBOOT_CONFIG"); then
@@ -144,7 +149,7 @@ resolve_config_path() {
     return 1
   fi
   if [[ -z "$path" ]]; then
-    path="${HOME}/.rboot/${name}"
+    path="${HOME}/.rboot/repos/${name}"
   else
     path="${path/#\~/$HOME}"
   fi
